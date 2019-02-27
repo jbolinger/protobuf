@@ -12804,7 +12804,7 @@ struct upb_json_parser {
   upb_bytessink input_;
 
   /* Stack to track the JSON scopes we are in. */
-  upb_jsonparser_frame stack[UPB_JSON_MAX_DEPTH];
+  upb_jsonparser_frame *stack;
   upb_jsonparser_frame *top;
   upb_jsonparser_frame *limit;
 
@@ -12812,7 +12812,7 @@ struct upb_json_parser {
 
   /* Ragel's internal parsing stack for the parsing state machine. */
   int current_state;
-  int parser_stack[UPB_JSON_MAX_DEPTH];
+  int *parser_stack;
   int parser_top;
 
   /* The handle for the current buffer. */
@@ -15882,6 +15882,15 @@ upb_json_parser *upb_json_parser_create(upb_env *env,
                                         const upb_symtab* symtab,
                                         upb_sink *output,
                                         bool ignore_json_unknown) {
+  return upb_json_parser_create_with_depth(env, method, symtab, output,
+                                           ignore_json_unknown, UPB_JSON_MAX_DEPTH);
+}
+upb_json_parser *upb_json_parser_create_with_depth(upb_env *env,
+                                                   const upb_json_parsermethod *method,
+                                                   const upb_symtab* symtab,
+                                                   upb_sink *output,
+                                                   bool ignore_json_unknown,
+                                                   int max_depth) {
 #ifndef NDEBUG
   const size_t size_before = upb_env_bytesallocated(env);
 #endif
@@ -15890,7 +15899,9 @@ upb_json_parser *upb_json_parser_create(upb_env *env,
 
   p->env = env;
   p->method = method;
-  p->limit = p->stack + UPB_JSON_MAX_DEPTH;
+  p->stack = upb_env_malloc(env, max_depth * sizeof(upb_jsonparser_frame));
+  p->parser_stack = upb_env_malloc(env, max_depth);
+  p->limit = p->stack + max_depth;
   p->accumulate_buf = NULL;
   p->accumulate_buf_size = 0;
   upb_bytessink_reset(&p->input_, &method->input_handler_, p);

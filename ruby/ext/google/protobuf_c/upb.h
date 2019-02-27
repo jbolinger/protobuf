@@ -9616,6 +9616,12 @@ upb_json_parser* upb_json_parser_create(upb_env* e,
                                         const upb_symtab* symtab,
                                         upb_sink* output,
                                         bool ignore_json_unknown);
+upb_json_parser *upb_json_parser_create_with_depth(upb_env *env,
+                                                   const upb_json_parsermethod *method,
+                                                   const upb_symtab* symtab,
+                                                   upb_sink *output,
+                                                   bool ignore_json_unknown,
+                                                   int max_depth);
 upb_bytessink *upb_json_parser_input(upb_json_parser *p);
 
 upb_json_parsermethod* upb_json_parsermethod_new(const upb_msgdef* md,

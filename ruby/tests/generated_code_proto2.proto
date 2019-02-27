@@ -78,3 +78,7 @@ message TestUnknown {
   }
   optional int32 unknown_field = 89;
 }
+
+message TestNest {
+  optional TestNest a = 100;
+}

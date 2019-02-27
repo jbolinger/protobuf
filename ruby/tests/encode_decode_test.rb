@@ -94,4 +94,31 @@ class EncodeDecodeTest < Test::Unit::TestCase
     end
   end
 
+  def test_deep_encode_json
+    msg = A::B::C::TestNest.new
+    at = msg
+    expected_json = ''
+    200.times do
+      at.a = A::B::C::TestNest.new
+      at = at.a
+      expected_json << '{"a":'
+    end
+    expected_json << '{}'
+    200.times { expected_json << '}' }
+
+    encode_error = assert_raise RuntimeError do
+      A::B::C::TestNest.encode_json msg, {}
+    end
+    assert_equal 'Maximum recursion depth exceeded during encoding.', encode_error.message
+
+    json = A::B::C::TestNest.encode_json msg, max_depth: 500
+    assert_equal expected_json, json
+
+    decode_error = assert_raise Google::Protobuf::ParseError do
+      A::B::C::TestNest.decode_json json, {}
+    end
+    assert_equal 'Error occurred during parsing: Nesting too deep', decode_error.message
+
+    assert_equal msg, A::B::C::TestNest.decode_json(json, max_depth: 500)
+  end
 end

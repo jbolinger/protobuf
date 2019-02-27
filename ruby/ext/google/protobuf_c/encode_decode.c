@@ -901,6 +901,7 @@ VALUE Message_decode_json(int argc, VALUE* argv, VALUE klass) {
   VALUE msg_rb;
   VALUE data = argv[0];
   VALUE ignore_unknown_fields = Qfalse;
+  VALUE max_depth = INT2NUM(ENCODE_MAX_NESTING);
   MessageHeader* msg;
 
   if (argc < 1 || argc > 2) {
@@ -915,6 +916,9 @@ VALUE Message_decode_json(int argc, VALUE* argv, VALUE klass) {
 
     ignore_unknown_fields = rb_hash_lookup2(
         hash_args, ID2SYM(rb_intern("ignore_unknown_fields")), Qfalse);
+
+    max_depth = rb_hash_lookup2(
+        hash_args, ID2SYM(rb_intern("max_depth")), INT2NUM(ENCODE_MAX_NESTING));
   }
 
   if (TYPE(data) != T_STRING) {
@@ -936,8 +940,8 @@ VALUE Message_decode_json(int argc, VALUE* argv, VALUE klass) {
     stackenv_init(&se, "Error occurred during parsing: %s");
 
     upb_sink_reset(&sink, get_fill_handlers(desc), msg);
-    parser = upb_json_parser_create(&se.env, method, pool->symtab,
-                                    &sink, ignore_unknown_fields);
+    parser = upb_json_parser_create_with_depth(&se.env, method, pool->symtab,
+                                               &sink, ignore_unknown_fields, max_depth);
     upb_bufsrc_putbuf(RSTRING_PTR(data), RSTRING_LEN(data),
                       upb_json_parser_input(parser));
 
@@ -954,8 +958,8 @@ VALUE Message_decode_json(int argc, VALUE* argv, VALUE klass) {
 /* msgvisitor *****************************************************************/
 
 static void putmsg(VALUE msg, const Descriptor* desc,
-                   upb_sink *sink, int depth, bool emit_defaults,
-                   bool is_json, bool open_msg);
+                   upb_sink *sink, int depth, int max_depth,
+                   bool emit_defaults, bool is_json, bool open_msg);
 
 static upb_selector_t getsel(const upb_fielddef *f, upb_handlertype_t type) {
   upb_selector_t ret;
@@ -987,7 +991,7 @@ static void putstr(VALUE str, const upb_fielddef *f, upb_sink *sink) {
 }
 
 static void putsubmsg(VALUE submsg, const upb_fielddef *f, upb_sink *sink,
-                      int depth, bool emit_defaults, bool is_json) {
+                      int depth, int max_depth, bool emit_defaults, bool is_json) {
   upb_sink subsink;
   VALUE descriptor;
   Descriptor* subdesc;
@@ -998,12 +1002,12 @@ static void putsubmsg(VALUE submsg, const upb_fielddef *f, upb_sink *sink,
   subdesc = ruby_to_Descriptor(descriptor);
 
   upb_sink_startsubmsg(sink, getsel(f, UPB_HANDLER_STARTSUBMSG), &subsink);
-  putmsg(submsg, subdesc, &subsink, depth + 1, emit_defaults, is_json, true);
+  putmsg(submsg, subdesc, &subsink, depth + 1, max_depth, emit_defaults, is_json, true);
   upb_sink_endsubmsg(sink, getsel(f, UPB_HANDLER_ENDSUBMSG));
 }
 
 static void putary(VALUE ary, const upb_fielddef *f, upb_sink *sink,
-                   int depth, bool emit_defaults, bool is_json) {
+                   int depth, int max_depth, bool emit_defaults, bool is_json) {
   upb_sink subsink;
   upb_fieldtype_t type = upb_fielddef_type(f);
   upb_selector_t sel = 0;
@@ -1043,7 +1047,7 @@ static void putary(VALUE ary, const upb_fielddef *f, upb_sink *sink,
         putstr(*((VALUE *)memory), f, &subsink);
         break;
       case UPB_TYPE_MESSAGE:
-        putsubmsg(*((VALUE *)memory), f, &subsink, depth,
+        putsubmsg(*((VALUE *)memory), f, &subsink, depth, max_depth,
                   emit_defaults, is_json);
         break;
 
@@ -1058,6 +1062,7 @@ static void put_ruby_value(VALUE value,
                            const upb_fielddef *f,
                            VALUE type_class,
                            int depth,
+                           int max_depth,
                            upb_sink *sink,
                            bool emit_defaults,
                            bool is_json) {
@@ -1100,12 +1105,12 @@ static void put_ruby_value(VALUE value,
       putstr(value, f, sink);
       break;
     case UPB_TYPE_MESSAGE:
-      putsubmsg(value, f, sink, depth, emit_defaults, is_json);
+      putsubmsg(value, f, sink, depth, max_depth, emit_defaults, is_json);
   }
 }
 
 static void putmap(VALUE map, const upb_fielddef *f, upb_sink *sink,
-                   int depth, bool emit_defaults, bool is_json) {
+                   int depth, int max_depth, bool emit_defaults, bool is_json) {
   Map* self;
   upb_sink subsink;
   const upb_fielddef* key_field;
@@ -1133,9 +1138,9 @@ static void putmap(VALUE map, const upb_fielddef *f, upb_sink *sink,
                          &entry_sink);
     upb_sink_startmsg(&entry_sink);
 
-    put_ruby_value(key, key_field, Qnil, depth + 1, &entry_sink,
+    put_ruby_value(key, key_field, Qnil, depth + 1, max_depth, &entry_sink,
                    emit_defaults, is_json);
-    put_ruby_value(value, value_field, self->value_type_class, depth + 1,
+    put_ruby_value(value, value_field, self->value_type_class, depth + 1, max_depth,
                    &entry_sink, emit_defaults, is_json);
 
     upb_sink_endmsg(&entry_sink, &status);
@@ -1149,7 +1154,8 @@ static const upb_handlers* msgdef_json_serialize_handlers(
     Descriptor* desc, bool preserve_proto_fieldnames);
 
 static void putjsonany(VALUE msg_rb, const Descriptor* desc,
-                       upb_sink* sink, int depth, bool emit_defaults) {
+                       upb_sink* sink, int depth, int max_depth,
+                       bool emit_defaults) {
   upb_status status;
   MessageHeader* msg = NULL;
   const upb_fielddef* type_field = upb_msgdef_itof(desc->msgdef, UPB_ANY_TYPE);
@@ -1224,8 +1230,8 @@ static void putjsonany(VALUE msg_rb, const Descriptor* desc,
       subsink.handlers =
           msgdef_json_serialize_handlers(payload_desc, true);
       subsink.closure = sink->closure;
-      putmsg(payload_msg_rb, payload_desc, &subsink, depth, emit_defaults, true,
-             is_wellknown);
+      putmsg(payload_msg_rb, payload_desc, &subsink, depth, max_depth,
+             emit_defaults, true, is_wellknown);
     }
   }
 
@@ -1233,14 +1239,14 @@ static void putjsonany(VALUE msg_rb, const Descriptor* desc,
 }
 
 static void putmsg(VALUE msg_rb, const Descriptor* desc,
-                   upb_sink *sink, int depth, bool emit_defaults,
-                   bool is_json, bool open_msg) {
+                   upb_sink *sink, int depth, int max_depth,
+                   bool emit_defaults, bool is_json, bool open_msg) {
   MessageHeader* msg;
   upb_msg_field_iter i;
   upb_status status;
 
   if (is_json && upb_msgdef_wellknowntype(desc->msgdef) == UPB_WELLKNOWN_ANY) {
-    putjsonany(msg_rb, desc, sink, depth, emit_defaults);
+    putjsonany(msg_rb, desc, sink, depth, max_depth, emit_defaults);
     return;
   }
 
@@ -1250,7 +1256,7 @@ static void putmsg(VALUE msg_rb, const Descriptor* desc,
 
   // Protect against cycles (possible because users may freely reassign message
   // and repeated fields) by imposing a maximum recursion depth.
-  if (depth > ENCODE_MAX_NESTING) {
+  if (depth > max_depth) {
     rb_raise(rb_eRuntimeError,
              "Maximum recursion depth exceeded during encoding.");
   }
@@ -1291,12 +1297,12 @@ static void putmsg(VALUE msg_rb, const Descriptor* desc,
     if (is_map_field(f)) {
       VALUE map = DEREF(msg, offset, VALUE);
       if (map != Qnil || emit_defaults) {
-        putmap(map, f, sink, depth, emit_defaults, is_json);
+        putmap(map, f, sink, depth, max_depth, emit_defaults, is_json);
       }
     } else if (upb_fielddef_isseq(f)) {
       VALUE ary = DEREF(msg, offset, VALUE);
       if (ary != Qnil) {
-        putary(ary, f, sink, depth, emit_defaults, is_json);
+        putary(ary, f, sink, depth, max_depth, emit_defaults, is_json);
       }
     } else if (upb_fielddef_isstring(f)) {
       VALUE str = DEREF(msg, offset, VALUE);
@@ -1312,7 +1318,7 @@ static void putmsg(VALUE msg_rb, const Descriptor* desc,
         putstr(str, f, sink);
       }
     } else if (upb_fielddef_issubmsg(f)) {
-      putsubmsg(DEREF(msg, offset, VALUE), f, sink, depth,
+      putsubmsg(DEREF(msg, offset, VALUE), f, sink, depth, max_depth,
                 emit_defaults, is_json);
     } else {
       upb_selector_t sel = getsel(f, upb_handlers_getprimitivehandlertype(f));
@@ -1414,7 +1420,8 @@ VALUE Message_encode(VALUE klass, VALUE msg_rb) {
     stackenv_init(&se, "Error occurred during encoding: %s");
     encoder = upb_pb_encoder_create(&se.env, serialize_handlers, &sink.sink);
 
-    putmsg(msg_rb, desc, upb_pb_encoder_input(encoder), 0, false, false, true);
+    putmsg(msg_rb, desc, upb_pb_encoder_input(encoder), 0, ENCODE_MAX_NESTING,
+           false, false, true);
 
     ret = rb_str_new(sink.ptr, sink.len);
 
@@ -1440,6 +1447,7 @@ VALUE Message_encode_json(int argc, VALUE* argv, VALUE klass) {
   VALUE msg_rb;
   VALUE preserve_proto_fieldnames = Qfalse;
   VALUE emit_defaults = Qfalse;
+  VALUE max_depth = INT2NUM(ENCODE_MAX_NESTING);
   stringsink sink;
 
   if (argc < 1 || argc > 2) {
@@ -1458,6 +1466,9 @@ VALUE Message_encode_json(int argc, VALUE* argv, VALUE klass) {
 
     emit_defaults = rb_hash_lookup2(
         hash_args, ID2SYM(rb_intern("emit_defaults")), Qfalse);
+
+    max_depth = rb_hash_lookup2(
+        hash_args, ID2SYM(rb_intern("max_depth")), INT2NUM(ENCODE_MAX_NESTING));
   }
 
   stringsink_init(&sink);
@@ -1472,7 +1483,7 @@ VALUE Message_encode_json(int argc, VALUE* argv, VALUE klass) {
     stackenv_init(&se, "Error occurred during encoding: %s");
     printer = upb_json_printer_create(&se.env, serialize_handlers, &sink.sink);
 
-    putmsg(msg_rb, desc, upb_json_printer_input(printer), 0,
+    putmsg(msg_rb, desc, upb_json_printer_input(printer), 0, NUM2INT(max_depth),
            RTEST(emit_defaults), true, true);
 
     ret = rb_enc_str_new(sink.ptr, sink.len, rb_utf8_encoding());
